@@ -24,7 +24,7 @@ export async function POST(request: Request) {
 
     const origin = new URL(request.url).origin;
     const orderId = `fastvpn_${randomUUID().replaceAll("-", "")}`;
-    createPaymentOrder(orderId, user.id, Number(plan), selected.amount);
+    await createPaymentOrder(orderId, user.id, Number(plan), selected.amount);
     const payload = {
       amount: selected.amount,
       currency: "USD",
@@ -46,10 +46,10 @@ export async function POST(request: Request) {
     });
     const result = await upstream.json();
     if (!upstream.ok || result.state !== 0 || !result.result?.url) {
-      failPaymentOrder(payload.order_id);
+      await failPaymentOrder(payload.order_id);
       return Response.json({ error: result.message || "Heleket could not create an invoice." }, { status: 502 });
     }
-    markPaymentCreated(payload.order_id, result.result.uuid, result.result.url);
+    await markPaymentCreated(payload.order_id, result.result.uuid, result.result.url);
     return Response.json({ url: result.result.url, orderId: payload.order_id });
   } catch {
     return Response.json({ error: "Could not create an invoice. Please try again." }, { status: 500 });

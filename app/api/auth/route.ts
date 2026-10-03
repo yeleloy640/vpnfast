@@ -7,7 +7,7 @@ const sessionOptions = { httpOnly: true, secure: process.env.NODE_ENV === "produ
 export async function GET() {
   const store = await cookies();
   const token = store.get(SESSION_COOKIE)?.value;
-  const user = token ? getUserForSession(token) : null;
+  const user = token ? await getUserForSession(token) : null;
   return Response.json({ user });
 }
 
@@ -19,7 +19,7 @@ export async function POST(request: Request) {
     if (origin && new URL(origin).host !== new URL(request.url).host) return Response.json({ error: "Cross-origin request blocked." }, { status: 403 });
     if (body.action === "logout") {
       const token = store.get(SESSION_COOKIE)?.value;
-      if (token) deleteSession(token);
+      if (token) await deleteSession(token);
       store.delete(SESSION_COOKIE);
       return Response.json({ ok: true });
     }
@@ -38,7 +38,7 @@ export async function POST(request: Request) {
       if (!user) return Response.json({ error: "Email or password is incorrect." }, { status: 401 });
     } else return Response.json({ error: "Unknown authentication action." }, { status: 400 });
 
-    const token = newSessionToken(user.id);
+    const token = await newSessionToken(user.id);
     store.set(SESSION_COOKIE, token, sessionOptions);
     return Response.json({ user });
   } catch (error) {

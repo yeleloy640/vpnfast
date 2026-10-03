@@ -26,7 +26,7 @@ export async function POST(request: Request) {
       return Response.json({ error: "Unknown order" }, { status: 400 });
     }
 
-    if (!applyPayment(payload.order_id, typeof payload.status === "string" ? payload.status : "unknown")) {
+    if (!await applyPayment(payload.order_id, typeof payload.status === "string" ? payload.status : "unknown")) {
       return Response.json({ error: "Unknown payment order" }, { status: 404 });
     }
     return Response.json({ received: true });

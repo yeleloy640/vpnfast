@@ -1,42 +1,6 @@
-import { mkdirSync } from "node:fs";
-import { join } from "node:path";
-import { randomBytes, scrypt as scryptCallback, timingSafeEqual, createHash } from "node:crypto";
+import { createHash, randomBytes, scrypt as scryptCallback, timingSafeEqual } from "node:crypto";
 import { promisify } from "node:util";
-
-import { DatabaseSync } from "node:sqlite";
-
-
-
-const directory = process.env.SQLITE_DATA_DIR || join(process.cwd(), "data");
-mkdirSync(directory, { recursive: true });
-const db = new DatabaseSync(join(directory, "fastvpn.sqlite"));
-db.exec(`
-  PRAGMA journal_mode = WAL;
-  PRAGMA foreign_keys = ON;
-  CREATE TABLE IF NOT EXISTS users (
-    id TEXT PRIMARY KEY, name TEXT NOT NULL, email TEXT NOT NULL UNIQUE,
-    password_hash TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-  );
-  CREATE TABLE IF NOT EXISTS sessions (
-    token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    expires_at INTEGER NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-  );
-  CREATE TABLE IF NOT EXISTS subscriptions (
-    user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-    plan TEXT NOT NULL DEFAULT 'free', status TEXT NOT NULL DEFAULT 'inactive',
-    expires_at TEXT, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-  );
-  CREATE TABLE IF NOT EXISTS devices (
-    id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    name TEXT NOT NULL, platform TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-  );
-  CREATE TABLE IF NOT EXISTS payments (
-    order_id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    plan_months INTEGER NOT NULL, amount TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
-    heleket_uuid TEXT, invoice_url TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-  );
-`);
+import { getCloudflareContext } from "@opennextjs/cloudflare";
 
 const scrypt = promisify(scryptCallback);
 const hashToken = (token: string) => createHash("sha256").update(token).digest("hex");
@@ -49,14 +13,25 @@ export type DashboardData = {
   payments: { orderId: string; amount: string; status: string; createdAt: string }[];
 };
 
-export async function createAccount(name: string, email: string, password: string) {
+type UserRow = PublicUser & { password_hash: string };
+type SubscriptionRow = DashboardData["subscription"];
+type DeviceRow = DashboardData["devices"][number];
+type PaymentRow = DashboardData["payments"][number];
+
+function database() {
+  return getCloudflareContext().env.DB;
+}
+
+export async function createAccount(name: string, email: string, password: string): Promise<PublicUser> {
   const salt = randomBytes(16).toString("hex");
   const derived = await scrypt(password, salt, 64) as Buffer;
-  const id = randomBytes(16).toString("hex");
+  const user = { id: randomBytes(16).toString("hex"), name, email };
   try {
-    db.prepare("INSERT INTO users (id, name, email, password_hash) VALUES (?, ?, ?, ?)").run(id, name, email, `${salt}:${derived.toString("hex")}`);
-    db.prepare("INSERT INTO subscriptions (user_id) VALUES (?)").run(id);
-    return { id, name, email } satisfies PublicUser;
+    await database().batch([
+      database().prepare("INSERT INTO users (id, name, email, password_hash) VALUES (?, ?, ?, ?)").bind(user.id, name, email, `${salt}:${derived.toString("hex")}`),
+      database().prepare("INSERT INTO subscriptions (user_id) VALUES (?)").bind(user.id),
+    ]);
+    return user;
   } catch (error) {
     if (error instanceof Error && error.message.includes("UNIQUE constraint failed: users.email")) throw new Error("An account with this email already exists.");
     throw error;
@@ -64,7 +39,7 @@ export async function createAccount(name: string, email: string, password: strin
 }
 
 export async function authenticate(email: string, password: string): Promise<PublicUser | null> {
-  const row = db.prepare("SELECT id, name, email, password_hash FROM users WHERE email = ?").get(email) as (PublicUser & { password_hash: string }) | undefined;
+  const row = await database().prepare("SELECT id, name, email, password_hash FROM users WHERE email = ?").bind(email).first<UserRow>();
   if (!row) return null;
   const [salt, stored] = row.password_hash.split(":");
   const derived = await scrypt(password, salt, 64) as Buffer;
@@ -73,65 +48,65 @@ export async function authenticate(email: string, password: string): Promise<Pub
   return { id: row.id, name: row.name, email: row.email };
 }
 
-export function createSession(userId: string) {
+export async function createSession(userId: string) {
   const token = randomBytes(32).toString("base64url");
-  db.prepare("INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)").run(hashToken(token), userId, Date.now() + 1000 * 60 * 60 * 24 * 30);
+  await database().prepare("INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)").bind(hashToken(token), userId, Date.now() + 1000 * 60 * 60 * 24 * 30).run();
   return token;
 }
 
-export function getUserForSession(token: string): PublicUser | null {
-  const row = db.prepare(`SELECT u.id, u.name, u.email FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ? AND s.expires_at > ?`).get(hashToken(token), Date.now()) as PublicUser | undefined;
-  return row ?? null;
+export async function getUserForSession(token: string): Promise<PublicUser | null> {
+  return await database().prepare(`SELECT u.id, u.name, u.email FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ? AND s.expires_at > ?`).bind(hashToken(token), Date.now()).first<PublicUser>();
 }
 
-export function deleteSession(token: string) { db.prepare("DELETE FROM sessions WHERE token_hash = ?").run(hashToken(token)); }
-
-export function getDashboard(user: PublicUser): DashboardData {
-  const subscription = db.prepare("SELECT plan, status, expires_at AS expiresAt FROM subscriptions WHERE user_id = ?").get(user.id) as DashboardData["subscription"] | undefined;
-  const devices = db.prepare("SELECT id, name, platform, created_at AS createdAt FROM devices WHERE user_id = ? ORDER BY created_at DESC").all(user.id) as DashboardData["devices"];
-  const payments = db.prepare("SELECT order_id AS orderId, amount, status, created_at AS createdAt FROM payments WHERE user_id = ? ORDER BY created_at DESC LIMIT 10").all(user.id) as DashboardData["payments"];
-  return { user, subscription: subscription ?? { plan: "free", status: "inactive", expiresAt: null }, devices, payments };
+export async function deleteSession(token: string) {
+  await database().prepare("DELETE FROM sessions WHERE token_hash = ?").bind(hashToken(token)).run();
 }
 
-export function addDevice(userId: string, name: string, platform: string) {
+export async function getDashboard(user: PublicUser): Promise<DashboardData> {
+  const db = database();
+  const [subscription, devices, payments] = await Promise.all([
+    db.prepare("SELECT plan, status, expires_at AS expiresAt FROM subscriptions WHERE user_id = ?").bind(user.id).first<SubscriptionRow>(),
+    db.prepare("SELECT id, name, platform, created_at AS createdAt FROM devices WHERE user_id = ? ORDER BY created_at DESC").bind(user.id).all<DeviceRow>(),
+    db.prepare("SELECT order_id AS orderId, amount, status, created_at AS createdAt FROM payments WHERE user_id = ? ORDER BY created_at DESC LIMIT 10").bind(user.id).all<PaymentRow>(),
+  ]);
+  return {
+    user,
+    subscription: subscription ?? { plan: "free", status: "inactive", expiresAt: null },
+    devices: devices.results,
+    payments: payments.results,
+  };
+}
+
+export async function addDevice(userId: string, name: string, platform: string) {
   const id = randomBytes(16).toString("hex");
-  db.prepare("INSERT INTO devices (id, user_id, name, platform) VALUES (?, ?, ?, ?)").run(id, userId, name, platform);
+  await database().prepare("INSERT INTO devices (id, user_id, name, platform) VALUES (?, ?, ?, ?)").bind(id, userId, name, platform).run();
   return id;
 }
 
-export function removeDevice(userId: string, id: string) {
-  return db.prepare("DELETE FROM devices WHERE user_id = ? AND id = ?").run(userId, id).changes > 0;
+export async function removeDevice(userId: string, id: string) {
+  const result = await database().prepare("DELETE FROM devices WHERE user_id = ? AND id = ?").bind(userId, id).run();
+  return result.meta.changes > 0;
 }
 
-export function createPaymentOrder(orderId: string, userId: string, planMonths: number, amount: string) {
-  db.prepare("INSERT INTO payments (order_id, user_id, plan_months, amount) VALUES (?, ?, ?, ?)").run(orderId, userId, planMonths, amount);
+export async function createPaymentOrder(orderId: string, userId: string, planMonths: number, amount: string) {
+  await database().prepare("INSERT INTO payments (order_id, user_id, plan_months, amount) VALUES (?, ?, ?, ?)").bind(orderId, userId, planMonths, amount).run();
 }
 
-export function markPaymentCreated(orderId: string, uuid: string, invoiceUrl: string) {
-  db.prepare("UPDATE payments SET heleket_uuid = ?, invoice_url = ?, updated_at = CURRENT_TIMESTAMP WHERE order_id = ?").run(uuid, invoiceUrl, orderId);
+export async function markPaymentCreated(orderId: string, uuid: string, invoiceUrl: string) {
+  await database().prepare("UPDATE payments SET heleket_uuid = ?, invoice_url = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE order_id = ?").bind(uuid, invoiceUrl, orderId).run();
 }
 
-export function failPaymentOrder(orderId: string) {
-  db.prepare("UPDATE payments SET status = 'failed', updated_at = CURRENT_TIMESTAMP WHERE order_id = ? AND status = 'pending'").run(orderId);
+export async function failPaymentOrder(orderId: string) {
+  await database().prepare("UPDATE payments SET status = 'failed', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE order_id = ? AND status = 'pending'").bind(orderId).run();
 }
 
-export function applyPayment(orderId: string, status: string) {
-  const order = db.prepare("SELECT user_id, plan_months, status FROM payments WHERE order_id = ?").get(orderId) as { user_id: string; plan_months: number; status: string } | undefined;
+export async function applyPayment(orderId: string, status: string) {
+  const db = database();
+  const order = await db.prepare("SELECT order_id FROM payments WHERE order_id = ?").bind(orderId).first<{ order_id: string }>();
   if (!order) return false;
-  if (status !== "paid" && status !== "paid_over") {
-    db.prepare("UPDATE payments SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE order_id = ? AND status = 'pending'").run(status, orderId);
-    return true;
-  }
-  if (order.status === "paid") return true;
-  const current = db.prepare("SELECT expires_at FROM subscriptions WHERE user_id = ?").get(order.user_id) as { expires_at: string | null } | undefined;
-  const prior = current?.expires_at ? new Date(current.expires_at) : new Date();
-  const start = prior > new Date() ? prior : new Date();
-  start.setMonth(start.getMonth() + order.plan_months);
-  db.exec("BEGIN IMMEDIATE");
-  try {
-    db.prepare("UPDATE payments SET status = 'paid', updated_at = CURRENT_TIMESTAMP WHERE order_id = ?").run(orderId);
-    db.prepare("UPDATE subscriptions SET plan = 'premium', status = 'active', expires_at = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ?").run(start.toISOString(), order.user_id);
-    db.exec("COMMIT");
-  } catch (error) { db.exec("ROLLBACK"); throw error; }
+  const validStatuses = new Set(["confirm_check", "paid", "paid_over", "fail", "wrong_amount", "cancel", "system_fail", "refund_process", "refund_fail", "refund_paid"]);
+  if (!validStatuses.has(status)) return false;
+  const normalized = status === "paid_over" ? "paid" : status;
+  await db.prepare("UPDATE payments SET status = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE order_id = ? AND status != 'paid'").bind(normalized, orderId).run();
   return true;
 }
