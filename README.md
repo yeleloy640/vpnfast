@@ -9,7 +9,7 @@ In **Workers & Pages → your Worker → Settings → Builds**, set:
 - **Build command:** `npm run cf:build`
 - **Deploy command:** `npm run cf:deploy`
 
-The plain `npm run build` only creates the standard Next.js build. It does not generate `.open-next`, which is why the later Wrangler deploy failed with “Could not find compiled Open Next config”. The OpenNext Cloudflare build command runs the Next.js build and then creates the Worker bundle. The deploy command must invoke the OpenNext adapter.
+The plain `npm run build` only creates the standard Next.js build. It does not generate `.open-next`. The `cf:build` command creates the Worker bundle; `cf:deploy` also rebuilds that bundle before deploying, so deployment does not depend on Workers Builds carrying generated files between its build and deploy steps. If logs still show `Executing user deploy command: npx wrangler deploy`, update and save the Deploy command above in the Cloudflare dashboard; the repository cannot change that dashboard setting.
 
 ## Cloudflare setup
 
