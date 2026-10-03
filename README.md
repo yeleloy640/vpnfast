@@ -2,6 +2,15 @@
 
 A dark, English-language VPN account dashboard built with Next.js 16 and Cloudflare Workers. Cloudflare D1 stores accounts, scrypt password hashes, sessions, registered devices, subscription state, and Heleket invoices.
 
+## Cloudflare Workers Builds settings
+
+In **Workers & Pages → your Worker → Settings → Builds**, set:
+
+- **Build command:** `npm run cf:build`
+- **Deploy command:** `npm run cf:deploy`
+
+The plain `npm run build` only creates the standard Next.js build. It does not generate `.open-next`, which is why the later Wrangler deploy failed with “Could not find compiled Open Next config”. The OpenNext Cloudflare build command runs the Next.js build and then creates the Worker bundle. The deploy command must invoke the OpenNext adapter.
+
 ## Cloudflare setup
 
 1. Use Node.js 20 or newer.
