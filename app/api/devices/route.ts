@@ -8,8 +8,13 @@ export async function POST(request: Request) {
   if (dashboard.devices.length >= 5) return Response.json({ error: "Your plan allows up to five devices." }, { status: 403 });
   const { name, platform } = await request.json() as { name?: string; platform?: string };
   if (!name?.trim() || !platform?.trim()) return Response.json({ error: "Device name and platform are required." }, { status: 400 });
-  const id = await addDevice(user.id, name.trim().slice(0, 80), platform.trim().slice(0, 40));
-  return Response.json({ id }, { status: 201 });
+  try {
+    const id = await addDevice(user.id, name.trim().slice(0, 80), platform.trim().slice(0, 40));
+    return Response.json({ id }, { status: 201 });
+  } catch (error) {
+    if (error instanceof Error && error.message === "device_limit_reached") return Response.json({ error: "Your plan allows up to five devices." }, { status: 403 });
+    throw error;
+  }
 }
 
 export async function DELETE(request: Request) {
