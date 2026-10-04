@@ -69,7 +69,7 @@ export default function LandingPage({ onLogin, onRegister, signedIn = false }: L
 
       <section className="landing-cta-band"><div className="cta-band-glow"/><div><div className="landing-eyebrow"><span/> {signedIn ? "YOUR FASTVPN ACCOUNT" : "GET STARTED TODAY"}</div><h2>{signedIn ? <>Your FastVPN.<br/><em>All in one place.</em></> : <>Ready to take control<br/>of your <em>FastVPN?</em></>}</h2><p>{signedIn ? "Continue to your dashboard to manage your account." : "Create an account and manage everything from one place."}</p><button className="landing-primary" onClick={signedIn ? onLogin : onRegister}>{signedIn ? "Open dashboard" : "Go to your account"} <span>↗</span></button></div></section>
 
-      <footer className="landing-footer"><a className="landing-brand" href="#top"><span className="landing-brand-icon">✳</span><span>fast<span>vpn</span></span></a><span>© 2026 FastVPN. Your account, under your control.</span><button onClick={onLogin}>{signedIn ? "Open dashboard" : "Sign in to your account"} <span>↗</span></button></footer>
+      <footer className="landing-footer"><a className="landing-brand" href="#top"><span className="landing-brand-icon">✳</span><span>fast<span>vpn</span></span></a><span>© 2026 FastVPN. Your account, under your control.</span><nav className="footer-links" aria-label="Legal information"><a href="/privacy">Privacy</a><a href="/terms">Terms</a><a href="#cookie-settings" onClick={(event) => { event.preventDefault(); window.dispatchEvent(new Event("fastvpn:cookie-settings")); }}>Cookie settings</a></nav><button onClick={onLogin}>{signedIn ? "Open dashboard" : "Sign in to your account"} <span>↗</span></button></footer>
     </main>
   );
 }
